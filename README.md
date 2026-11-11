@@ -220,7 +220,10 @@ updates notes in `phd/notes/`, and nothing is written beside the code.
 - **The margin column**: when the drawer leaves the text room beside it (drag its left edge to
   widen it), the margin shows each footnote's text level with its mark, and a card for each open
   comment or suggestion level with its text: its kind, a suggestion's new text, and the last
-  message, cut short. Hover a card to light up its text; click it to open the thread below. On a
+  message, cut short. Hover a card to light up its text; click it to open the thread below. Each
+  card also has a box for a short reply (**Enter** posts it) and the thread's buttons as icons:
+  reply, ask Claude (with the reply, if one is written), then accept and reject for a suggestion,
+  or resolve for a comment. What is typed there shows in the thread's box below too. On a
   narrower drawer the margin keeps only the footnotes' numbers.
 - **Comments and suggestions**, as in Overleaf, discuss a part of a note before anyone edits it.
   Select text in the drawer and choose:
@@ -229,8 +232,9 @@ updates notes in `phd/notes/`, and nothing is written beside the code.
     as it is, what should change in words, for Claude to write.
 
   Open threads are marked in the text (a suggestion as the old text struck through and the new
-  text after it) and listed under the note, where you **Reply**, **Resolve** a comment, **Accept**
-  a suggestion (its new text is written into the note) or **Reject** it. Closed threads stay in
+  text after it) and listed under the note, where icons let you **Reply** (↩), **Ask Claude** (✦),
+  **Resolve** a comment (a ticked circle), **Accept** a suggestion (✓, its new text is written into
+  the note) or **Reject** it (✕); hover one for its name. Closed threads stay in
   the note's **History**, and **Reopen** brings one back.
   - **Ask Claude** (on a thread, or **Post and ask Claude** / **Post and suggest** when posting) sends the thread to the session that
     ran `/rft`, as a turn of its own. Claude answers only when asked. It answers in the thread: a

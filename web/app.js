@@ -2750,11 +2750,39 @@
   const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s)
   const who = by => (by === 'claude' ? 'Claude' : 'You')
   const STATE = { resolved: 'Resolved', accepted: 'Accepted', rejected: 'Rejected', applied: 'Applied by Claude' }
+  const TIP = {
+    ask: 'Ask Claude to answer this thread (with your reply, if you wrote one): a turn of the session that ran /rft',
+    accept: 'Write the new text into the note',
+    reject: 'Reject the suggestion: it goes to the history',
+    resolve: 'Settled: it goes to the history',
+  }
+  /** Why a suggestion's new text cannot be written into the note, or '' when it can. */
+  const cantAccept = t => (t.replacement == null ? 'There is no new text to write yet' : !t.exact ? 'The text changed since the suggestion' : '')
+  // the margin cards' buttons, drawn as the drawer's other icons are (.ico)
+  const ICON = {
+    reply: '<path d="M9.5 14.5L4.5 9.5l5-5"/><path d="M4.5 9.5H14a5.5 5.5 0 0 1 5.5 5.5v4"/>',
+    ask: '<path d="M10.5 3c.6 4.4 2.5 6.3 6.9 6.9-4.4.6-6.3 2.5-6.9 6.9-.6-4.4-2.5-6.3-6.9-6.9 4.4-.6 6.3-2.5 6.9-6.9z"/><path d="M18.5 15v5.5M15.75 17.75h5.5"/>',
+    accept: '<path d="M4.5 12.5l4.8 4.8L19.5 7"/>',
+    reject: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+    resolve: '<circle cx="12" cy="12" r="8.5"/><path d="M8.2 12.4l2.7 2.7 5-5.6"/>',
+  }
+  const iconBtn = (act, label, tip, cls, off = false) =>
+    `<button type="button" class="s-btn ${cls}" data-act="${act}" aria-label="${label}" title="${escH(tip)}"${off ? ' disabled' : ''}><svg class="ico" viewBox="0 0 24 24" aria-hidden="true">${ICON[act]}</svg></button>`
+  /** An open thread's buttons, as icons, on its card in the margin and under the note: reply, ask Claude, then accept and reject a suggestion, or resolve a comment. */
+  function threadButtons(t, replyTip) {
+    const no = cantAccept(t)
+    return iconBtn('reply', 'Reply', replyTip, 'neutral') +
+      iconBtn('ask', t.asked ? 'Ask Claude again' : 'Ask Claude', t.asked ? `Again: ${TIP.ask}` : TIP.ask, 'ask') +
+      (t.kind === 'suggestion'
+        ? iconBtn('accept', 'Accept', no || TIP.accept, 'ok', Boolean(no)) + iconBtn('reject', 'Reject', TIP.reject, 'no')
+        : iconBtn('resolve', 'Resolve', TIP.resolve, 'ok'))
+  }
   const sameNote = (a, b) => a && b && a.id === b.id && a.body === b.body && a.locked === b.locked && JSON.stringify(a.threads) === JSON.stringify(b.threads)
 
   /** The note in the drawer, drawn: its text, its open threads marked, its footnotes in the margin, its threads below. */
   function showNote() {
     const top = shownFor === (shown && shown.id) ? drawer.scrollTop : 0
+    const typing = shownFor === (shown && shown.id) ? marginFocus() : null
     hideSelBar()
     fnPop.hidden = true
     if (!shown) {
@@ -2773,6 +2801,7 @@
     showLock()
     shownFor = shown.id
     drawer.scrollTop = top
+    refocusMargin(typing)
   }
 
   // ------------------------------------------------ where the page is in the note's text
@@ -2911,22 +2940,48 @@
   const MARGIN_GAP = 18
   let wideMargin = false // whether the margin column shows the footnotes' texts and the threads' cards
 
-  /** A card in the margin for an open thread: its kind, a suggestion's new text, its last message, cut short. */
+  /**
+   * A card in the margin for an open thread: its kind, a suggestion's new text, its last message,
+   * cut short; and, where the note can be written, a box for a short reply and the thread's
+   * buttons as icons (reply, ask Claude, then accept and reject a suggestion, or resolve a comment).
+   */
   function sideCard(t) {
     const msgs = t.messages || []
     const last = msgs[msgs.length - 1]
     const replies = Math.max(0, msgs.length - 1)
     const kind = t.kind === 'comment' ? 'Comment' : t.replacement == null ? 'Suggestion · in words' : 'Suggestion'
+    const err = threadErrors.get(draftKey(t.id))
     const el = document.createElement('div')
     el.className = `side side-t ${t.kind}`
     el.dataset.thread = t.id
     el.title = 'Open the thread'
+    let acts = ''
+    if (!EMBED) {
+      acts = `<div class="s-act" title=""><input type="text" class="s-reply" placeholder="Reply" aria-label="A short reply" title="A short reply: Enter posts it, Esc leaves it">` +
+        threadButtons(t, 'Reply (Enter)') + '</div>'
+    }
     el.innerHTML = `<div class="s-head"><b>${kind}</b>${replies ? ` · ${replies} ${replies > 1 ? 'replies' : 'reply'}` : ''}${t.exact ? '' : ' · the text changed'}</div>` +
       (t.kind === 'suggestion' && t.replacement != null
         ? `<div class="s-repl">${t.replacement ? escH(clip(t.replacement, 240)) : '<em>(delete the text)</em>'}</div>` : '') +
       (last ? `<div class="s-msg"><span class="s-who">${who(last.by)}:</span> ${mdm.inline(clip(String(last.text || '').replace(/\s+/g, ' ').trim(), 320))}</div>` : '') +
-      (t.asked ? '<div class="s-asked">Claude is answering…</div>' : '')
+      (t.asked ? '<div class="s-asked">Claude is answering…</div>' : '') +
+      (err ? `<div class="s-error">${escH(err)}</div>` : '') + acts
+    const box = el.querySelector('.s-reply')
+    if (box) box.value = drafts.get(draftKey(t.id)) || ''
     return el
+  }
+
+  /** The margin's reply box being typed in, to give it back its focus once the margin is drawn again. */
+  function marginFocus() {
+    const f = document.activeElement
+    if (!f || !f.classList || !f.classList.contains('s-reply') || !article.contains(f)) return null
+    return { tid: f.closest('.side-t').dataset.thread, start: f.selectionStart, end: f.selectionEnd }
+  }
+  function refocusMargin(keep) {
+    const box = keep && article.querySelector(`.side-t[data-thread="${CSS.escape(keep.tid)}"] .s-reply`)
+    if (!box || document.activeElement === box) return
+    box.focus({ preventScroll: true })
+    box.setSelectionRange(keep.start, keep.end)
   }
 
   /**
@@ -2938,6 +2993,7 @@
   function layoutSidenotes() {
     const layer = article.querySelector(':scope > .sidenotes')
     if (!layer || article.hidden) return
+    const typing = marginFocus()
     layer.textContent = ''
     const sups = [...article.querySelectorAll('.src sup.fn-ref')]
     const open = shown ? shown.threads.filter(t => t.state === 'open' && t.at) : []
@@ -2990,6 +3046,7 @@
     }
     // the column may run on below the text: the threads under it stay clear of it
     if (wideMargin && below > 0) article.style.minHeight = `${Math.ceil(below)}px`
+    refocusMargin(typing)
   }
   let layoutQueued = false
   new ResizeObserver(() => {
@@ -3291,11 +3348,8 @@
     const err = threadErrors.get(draftKey(t.id))
     let bar = ''
     if (can && isOpen) {
-      const accept = t.kind === 'suggestion'
-        ? `<button type="button" data-act="accept" class="primary"${t.replacement == null || !t.exact ? ' disabled' : ''} title="${t.replacement == null ? 'There is no new text to write yet' : !t.exact ? 'The text changed since the suggestion' : 'Write the new text into the note'}">Accept</button><button type="button" data-act="reject">Reject</button>`
-        : '<button type="button" data-act="resolve" title="Settled: it goes to the history">Resolve</button>'
       bar = `<textarea rows="2" placeholder="Reply" aria-label="Reply"></textarea>
-        <div class="t-bar"><button type="button" data-act="reply" title="Ctrl+Enter">Reply</button><button type="button" data-act="ask" title="Ask Claude to answer this thread (with your reply, if you wrote one): a turn of the session that ran /rft">${t.asked ? 'Ask again' : 'Ask Claude'}</button>${accept}</div>`
+        <div class="t-bar">${threadButtons(t, 'Reply (Ctrl+Enter)')}</div>`
     } else if (can) bar = '<div class="t-bar"><button type="button" data-act="reopen">Reopen</button></div>'
     return `<div class="thread ${t.kind} ${escH(t.state)}" data-thread="${escH(t.id)}">
       <div class="t-head"><span><span class="t-kind">${kind}</span> <span class="muted">${state}</span></span>${isOpen && t.at ? '<button type="button" class="linkish" data-act="show" title="Show it in the text">show</button>' : ''}</div>
@@ -3352,36 +3406,56 @@
     const r = await send({ id, thread: tid, action, ...extra })
     if (!r.ok) {
       threadErrors.set(`${id} ${tid}`, `Not done: ${r.error}.`)
-      if (shown && shown.id === id) renderThreads()
+      if (shown && shown.id === id) { renderThreads(); layoutSidenotes() }
     }
     return r
   }
 
-  threadsBox.addEventListener('click', async ev => {
+  /**
+   * A thread's button, under the note or on its card in the margin: Reply and Ask post the reply
+   * written in `box` first, when there is one. The draft goes before the request, so the redraw
+   * that follows a posted reply does not write it back, and returns when the reply is refused.
+   */
+  async function threadAction(tid, what, box, b) {
+    if (what === 'show') { showMark(tid); return }
+    if (!editKey()) { noKey.hidden = false; return }
+    const id = shown.id
+    const text = box ? box.value.trim() : ''
+    if (what === 'reply' && !text) { if (box) box.focus(); return }
+    if (what === 'accept' && !window.confirm('Write the new text into the note?')) return
+    b.disabled = true
+    if ((what === 'reply' || what === 'ask') && text) {
+      const key = `${id} ${tid}`
+      const draft = drafts.get(key)
+      drafts.delete(key)
+      const r = await act(id, tid, 'reply', { text })
+      if (!r.ok) {
+        if (draft != null) { drafts.set(key, draft); if (shown && shown.id === id) { renderThreads(); layoutSidenotes() } }
+        return
+      }
+    }
+    if (what !== 'reply') await act(id, tid, what)
+  }
+
+  /** A reply being written, in the box under the note or on the card in the margin: the other box shows it too. */
+  function setDraft(tid, value, from) {
+    drafts.set(draftKey(tid), value)
+    const q = CSS.escape(tid)
+    for (const box of [threadsBox.querySelector(`.thread[data-thread="${q}"] textarea`), article.querySelector(`.side-t[data-thread="${q}"] .s-reply`)]) {
+      if (box && box !== from) box.value = value
+    }
+  }
+
+  threadsBox.addEventListener('click', ev => {
     const link = ev.target.closest('a[data-go]')
     if (link) { ev.preventDefault(); go(link.dataset.go); return }
     const b = ev.target.closest('button[data-act]')
     if (!b || !shown) return
-    const tid = b.closest('.thread').dataset.thread
-    const what = b.dataset.act
-    if (what === 'show') { showMark(tid); return }
-    if (!editKey()) { noKey.hidden = false; return }
-    const id = shown.id
-    const box = b.closest('.thread').querySelector('textarea')
-    const text = box ? box.value.trim() : ''
-    if (what === 'reply' && !text) { box.focus(); return }
-    if (what === 'accept' && !window.confirm('Write the new text into the note?')) return
-    b.disabled = true
-    if ((what === 'reply' || what === 'ask') && text) {
-      const r = await act(id, tid, 'reply', { text })
-      if (!r.ok) return
-      drafts.delete(`${id} ${tid}`)
-      if (box) box.value = ''
-    }
-    if (what !== 'reply') await act(id, tid, what)
+    const t = b.closest('.thread')
+    threadAction(t.dataset.thread, b.dataset.act, t.querySelector('textarea'), b)
   })
   threadsBox.addEventListener('input', ev => {
-    if (ev.target.tagName === 'TEXTAREA') drafts.set(draftKey(ev.target.closest('.thread').dataset.thread), ev.target.value)
+    if (ev.target.tagName === 'TEXTAREA') setDraft(ev.target.closest('.thread').dataset.thread, ev.target.value, ev.target)
   })
   threadsBox.addEventListener('keydown', ev => {
     if (ev.target.tagName !== 'TEXTAREA' || ev.key !== 'Enter' || !(ev.ctrlKey || ev.metaKey)) return
@@ -3399,8 +3473,26 @@
     if (tid !== hovered) { hovered = tid; setActive(tid) }
   })
   article.addEventListener('mouseleave', () => { if (hovered) { hovered = null; setActive(null) } })
+  // the short reply on a card in the margin: Enter posts it, Esc leaves the box with the draft kept
+  const isMarginReply = el => Boolean(el.classList && el.classList.contains('s-reply'))
+  article.addEventListener('input', ev => {
+    if (isMarginReply(ev.target)) setDraft(ev.target.closest('.side-t').dataset.thread, ev.target.value, ev.target)
+  })
+  article.addEventListener('keydown', ev => {
+    if (!isMarginReply(ev.target)) return
+    if (ev.key === 'Enter' && !ev.isComposing) { ev.preventDefault(); ev.target.closest('.side-t').querySelector('button[data-act="reply"]').click() }
+    else if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); ev.target.blur() }
+  })
   article.addEventListener('click', ev => {
     if (ev.target.closest('a[data-go]')) return
+    // a card's buttons in the margin act on its thread; a click in its reply box only types there
+    const sb = ev.target.closest('.side-t button[data-act]')
+    if (sb) {
+      const c = sb.closest('.side-t')
+      if (shown) threadAction(c.dataset.thread, sb.dataset.act, c.querySelector('.s-reply'), sb)
+      return
+    }
+    if (ev.target.closest('.side-t .s-act')) return
     const hlMark = highlighting && ev.target.closest('.src mark.hl')
     if (hlMark) {
       const sel = window.getSelection()
