@@ -249,7 +249,8 @@
   const sideOf = id => (stars.has(id) ? STAR_R * STAR_SIDE : R)
   /** The priority a note glows with: only an open note's (as only they count towards the limits). */
   const glowOf = d => (K.isOpen(d) && HALO[d.priority] ? d.priority : null)
-  const toneOf = d => `tone ${TYPES.includes(d.type) ? d.type : 'other'} s-${STATUSES.includes(d.status) ? d.status : 'other'}`
+  // a literature search (a reference note tagged literature) has a colour of its own
+  const toneOf = d => `tone ${d.type === 'reference' && (d.tags || []).includes('literature') ? 'literature' : TYPES.includes(d.type) ? d.type : 'other'} s-${STATUSES.includes(d.status) ? d.status : 'other'}`
 
   // ---------------------------------------------------------------- drawing
 
@@ -619,10 +620,59 @@
     layoutSidenotes()
   }
 
+  // ---- confirmations and notices in the page: the desktop's browser pane refuses alert() and confirm()
+
+  let armedKey = null, armedUntil = 0
+  /** True when the same action was asked for within the last 5 seconds; else arms it and returns false. */
+  function armed(key) {
+    const now = Date.now()
+    if (armedKey === key && now < armedUntil) { armedKey = null; return true }
+    armedKey = key; armedUntil = now + 5000
+    return false
+  }
+
+  /**
+   * A button that asks to be pressed again: its label says so for 5 seconds. An icon button keeps
+   * its icon (there is no room for words): it lights up and the notice at the bottom asks instead.
+   */
+  function pressedTwice(button, ask) {
+    const key = `button ${button.closest('[data-thread]')?.dataset.thread ?? ''} ${button.dataset.act ?? ''}`
+    if (armed(key)) return true
+    if (button.querySelector('svg')) {
+      button.classList.add('armed')
+      notify(`${ask} Press it again within a few seconds.`)
+      setTimeout(() => button.classList.remove('armed'), 5000)
+      return false
+    }
+    const label = button.textContent
+    button.textContent = ask
+    setTimeout(() => { if (button.textContent === ask) button.textContent = label }, 5000)
+    return false
+  }
+
+  /** A short message at the bottom of the page, gone after a while or on a click. */
+  function notify(text) {
+    let box = document.getElementById('notice')
+    if (!box) {
+      box = document.createElement('div')
+      box.id = 'notice'
+      box.setAttribute('role', 'status')
+      box.addEventListener('click', () => { box.hidden = true })
+      document.body.appendChild(box)
+    }
+    box.textContent = text
+    box.hidden = false
+    clearTimeout(notify.timer)
+    notify.timer = setTimeout(() => { box.hidden = true }, 7000)
+  }
+
   /** Closes the editor, asking first when it holds changes; false when the user keeps them. */
   function leaveEditor() {
     if (!editing) return true
-    if (isDirty() && !window.confirm(`Drop your changes to ${editing.id}?`)) return false
+    if (isDirty() && !armed(`drop ${editing.id}`)) {
+      notify(`Unsaved changes to ${editing.id}: do it again within a few seconds to drop them, or save first.`)
+      return false
+    }
     closeEditor()
     return true
   }
@@ -1851,7 +1901,7 @@
     if (EMBED) return
     const redraw = () => { drawKanban(); if (selected && byId.has(selected)) renderDrawerPriority(byId.get(selected)) }
     if (!editKey()) {
-      window.alert('To set priorities, open the address /rft printed (it ends in ?token=…) once: this browser then remembers its key.')
+      notify('To set priorities, open the address /rft printed (it ends in ?token=…) once: this browser then remembers its key.')
       redraw()
       return
     }
@@ -1864,9 +1914,9 @@
         body: JSON.stringify(dismiss ? { id, dismiss: true } : { id, priority }),
       })
       const reply = await res.json().catch(() => ({}))
-      if (!res.ok) window.alert(`${dismiss ? 'Not dismissed' : 'Priority not set'}: ${reply.error || `the server answered ${res.status}`}`)
+      if (!res.ok) notify(`${dismiss ? 'Not dismissed' : 'Priority not set'}: ${reply.error || `the server answered ${res.status}`}`)
     } catch (e) {
-      window.alert('The server is not answering.')
+      notify('The server is not answering.')
     } finally {
       await poll()
       redraw() // also puts a menu back when the change was refused
@@ -1967,7 +2017,7 @@
   async function calWrite(route, body, what) {
     if (EMBED) return null
     if (!editKey()) {
-      window.alert('To change dates, open the address /rft printed (it ends in ?token=…) once: this browser then remembers its key.')
+      notify('To change dates, open the address /rft printed (it ends in ?token=…) once: this browser then remembers its key.')
       return null
     }
     try {
@@ -1977,10 +2027,10 @@
         body: JSON.stringify(body),
       })
       const reply = await res.json().catch(() => ({}))
-      if (!res.ok) { window.alert(`${what}: ${reply.error || `the server answered ${res.status}`}`); return null }
+      if (!res.ok) { notify(`${what}: ${reply.error || `the server answered ${res.status}`}`); return null }
       return reply
     } catch (e) {
-      window.alert('The server is not answering.')
+      notify('The server is not answering.')
       return null
     } finally {
       await poll()
@@ -2751,7 +2801,7 @@
   const who = by => (by === 'claude' ? 'Claude' : 'You')
   const STATE = { resolved: 'Resolved', accepted: 'Accepted', rejected: 'Rejected', applied: 'Applied by Claude' }
   const TIP = {
-    ask: 'Ask Claude to answer this thread (with your reply, if you wrote one): a turn of the session that ran /rft',
+    ask: 'Ask Claude to answer this thread (with your reply, if you wrote one), in the background: the answer comes into the thread',
     accept: 'Write the new text into the note',
     reject: 'Reject the suggestion: it goes to the history',
     resolve: 'Settled: it goes to the history',
@@ -3237,8 +3287,8 @@
     composerAsk.hidden = kind === 'footnote'
     composerAsk.textContent = kind === 'suggestion' ? 'Post and suggest' : 'Post and ask Claude'
     composerAsk.title = kind === 'suggestion'
-      ? 'Post it and ask Claude to make the change, or, on a locked note, to write it for you to accept: a turn of the session that ran /rft'
-      : 'Post it and ask Claude to answer it: a turn of the session that ran /rft'
+      ? 'Post it and ask Claude to write the new text, in the background, for you to accept'
+      : 'Post it and ask Claude to answer it, in the background: the answer comes into the thread'
     composerPost.textContent = kind === 'footnote' ? 'Add footnote' : 'Post'
     setComposerMsg('')
     hideSelBar()
@@ -3422,7 +3472,8 @@
     const id = shown.id
     const text = box ? box.value.trim() : ''
     if (what === 'reply' && !text) { if (box) box.focus(); return }
-    if (what === 'accept' && !window.confirm('Write the new text into the note?')) return
+    // no native confirm (the desktop's browser pane refuses dialogs): a second press within a few seconds
+    if (what === 'accept' && !pressedTwice(b, 'Write it?')) return
     b.disabled = true
     if ((what === 'reply' || what === 'ask') && text) {
       const key = `${id} ${tid}`
@@ -3539,9 +3590,9 @@
       })
       const reply = await res.json().catch(() => ({}))
       if (res.ok && selected === id && !editing) { shown = noteOf(reply); showNote() }
-      else if (!res.ok) window.alert(`Not ${locked ? 'locked' : 'unlocked'}: ${reply.error || `the server answered ${res.status}`}.`)
+      else if (!res.ok) notify(`Not ${locked ? 'locked' : 'unlocked'}: ${reply.error || `the server answered ${res.status}`}.`)
     } catch (e) {
-      window.alert('The server is not answering.')
+      notify('The server is not answering.')
     } finally {
       lockBtn.disabled = false
     }

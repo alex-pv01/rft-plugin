@@ -8,7 +8,7 @@
   --link-hl: light-dark(#1f2328, #e6e8ee); --accent: light-dark(#7048e8, #9775fa);
   --label-halo: light-dark(#fbfbfd, #0f1115); --direction: light-dark(#7048e8, #9775fa);
   --experiment: light-dark(#0ca678, #20c997); --reference: light-dark(#d6336c, #f06595);
-  --theory: light-dark(#3b5bdb, #5c7cfa); --done: light-dark(#2f9e44, #40c057);
+  --theory: light-dark(#3b5bdb, #5c7cfa); --literature: light-dark(#0c8599, #22b8cf); --done: light-dark(#2f9e44, #40c057);
   --running: light-dark(#e8590c, #fd7e14); --planned: light-dark(#e8a400, #fab005);
   --idea: light-dark(#f2c94c, #ffe066); --dropped: light-dark(#e03131, #fa5252); --discussed: #868e96;
   --moved: light-dark(#1c7ed6, #4dabf7);
@@ -63,6 +63,7 @@ main { position: relative; flex: 1; min-height: 0; }
 .tone.experiment { --hue: var(--experiment); }
 .tone.reference { --hue: var(--reference); }
 .tone.theory { --hue: var(--theory); }
+.tone.literature { --hue: var(--literature); }
 .tone.s-done { --i: 100%; }
 .tone.s-running { --i: 74%; }
 .tone.s-planned { --i: 52%; }
@@ -355,6 +356,8 @@ details.history .thread { opacity: 0.85; }
 .s-btn.ok { --c: var(--done); }
 .s-btn.no { --c: var(--dropped); }
 .s-btn:hover:not(:disabled), .s-btn:focus-visible { border-color: var(--c); background: color-mix(in srgb, var(--c) 14%, var(--bg)); outline: none; }
+/* pressed once, waiting for the second press that confirms */
+.s-btn.armed { border-color: var(--c); color: var(--bg); background: var(--c); }
 #drawer-lock[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 /* where moved notes came from */
 #origins { pointer-events: none; }
@@ -586,3 +589,9 @@ a.cal-dl-name:hover { text-decoration: underline; }
 .drawer-dates .suggest { margin-top: 0; flex: 1 1 100%; }
 .kb-due { padding: 0 6px; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); }
 .kb-due.risk { border-color: var(--risk); color: var(--risk); font-weight: 600; }
+
+/* the page's own notice, in place of alert() */
+#notice { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 50;
+  max-width: min(560px, calc(100vw - 32px)); padding: 10px 14px; border-radius: 8px;
+  background: var(--panel); color: var(--fg); border: 1px solid var(--line);
+  box-shadow: 0 4px 18px rgb(0 0 0 / 0.25); cursor: pointer; font-size: 0.92em; }

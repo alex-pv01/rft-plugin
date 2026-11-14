@@ -21,8 +21,9 @@ children / up / down fields are derived from their `parent:` field by the rft to
   path was not taken.
 - **Reference (R..)**, in `references/`: what was *found in the literature*: a paper, a method
   or a literature review, summarised, with the project's own reading of it. New directions,
-  theory notes and sometimes experiments come out of it. A review can hold one child reference
-  per key paper.
+  theory notes and sometimes experiments come out of it. A literature search is one literature
+  note (tagged `literature`) that lists its papers; a paper gets a note of its own only when the
+  user chooses it.
 - **Theory (T..)**, in `theory/`: the project's *own understanding*: definitions of concepts,
   methods, taxonomies of methodologies, proofs and arguments, built on directions, experiments
   and references.
@@ -150,20 +151,24 @@ The tree should start from what is already known, not from scratch.
   literature search before planning experiments. Do not start the search unasked: it takes
   time.
 - **A new concept: offer a search.** When you propose a concept, offer a literature search for
-  it; once agreed, its reference notes go under the concept's start note.
+  it; once agreed, its literature note goes under the concept's start note.
 - **`/rft-literature <topic, note id or concept>`** asks for the search directly. Search with the
   tools you have (web search, deep research, arXiv); read each source before writing about it;
-  add one reference note per key paper (usually 4 to 10) under the note or concept it is about,
-  with **Source** (DOI, arXiv id or URL), **Summary**, **Method**, **Key results** as reported
-  and **Relevance**; `done` once summarised from the paper itself, `planned` if only found.
-  Then call `rft_collect_papers` with the new notes' ids, give a short synthesis (known, open,
-  setups to start from) and list the directions it suggests: add them only once the user
-  chooses.
+  write the whole search as **one literature note** under the note or concept it is about:
+  `rft_add_node` with `type: reference`, `tags: ["literature"]`, title `Literature on <topic>`,
+  and sections **Search** (what, with which tools, when), **Papers** (one `### <year> <first
+  author> — <title>` entry per key paper, usually 4 to 10: a link that can be checked, what it
+  claims and how, key results as reported, what it means for the project), **Synthesis** and
+  **Relevance**. Not a note per paper: a paper gets a reference note of its own only once the
+  user chooses it. Then call `rft_collect_papers` with the note's id, give a short synthesis
+  (known, open, setups to start from) and list the directions it suggests and the papers worth
+  a note of their own: add them only once the user chooses. The tree shows literature notes in
+  a colour of their own (cyan; `▤` in the pane).
 - **Papers in the vault.** `rft_collect_papers(ids?)` downloads, in the background, the PDFs of
   reference notes whose **Source** has an arXiv id or link, or a PDF link on an open-access
   host (OpenReview, PMLR, ACL Anthology, NeurIPS and CVF proceedings, JMLR, bioRxiv...), into
   `papers/<concept>/<year> <first author> <title>.pdf`, and links each from its note with
-  `pdf:`. Run again after concepts change: saved PDFs move to their concept's folder. It never
+  `pdf:` (in a literature note, one PDF per `###` entry, linked by a `PDF:` line in the entry). Run again after concepts change: saved PDFs move to their concept's folder. It never
   downloads from paywalled publishers; for those, the note keeps its DOI.
 - **Experiments start from a paper.** A proposed experiment says which reference's setup it
   starts from (baseline, data, protocol) and links it in `refs` (rule 5 below). If there is
@@ -275,7 +280,7 @@ its own. A due date is a day, a local time, or a time in a zone:
 - Write `gpus:` on an experiment that takes more than one GPU (from its command and config), and
   `after:` (wikilinks) on one that waits for another run. With `gpus:` in `.rft/config.json`, the
   plugin reports the days the planned and running experiments need more GPUs than there are.
-- `rft_set_status` records `started:` the day a run starts and `finished:` the day it is done:
+- In a vault that uses dates, `rft_set_status` records `started:` the day a run starts and `finished:` the day it is done:
   the calendar's runs, and real durations to set against the estimates.
 - **Planning** is backwards from each deadline, in whole days: what a deadline needs must end by
   its due day, so a note's latest start is the due day less its estimate (less those of the notes
@@ -421,7 +426,7 @@ folder and every link to it change together.
   - a **suggestion** has new text for it, or says in words what should change (an instruction,
     with no replacement yet).
 - **Answer a thread only when the user asks**: the tree view's **Ask Claude** sends you the thread
-  as a prompt. Answer in the thread, not in the chat:
+  as a prompt (when it cannot answer it in a subagent). Answer in the thread, not in the chat:
   - a comment: read what the question needs, reply with `rft_comment {id, thread, text}`, and do
     not edit the note; propose a change with `rft_suggest` if one is needed;
   - a suggestion on a locked note: write the new text with `rft_suggest {id, thread,
@@ -470,7 +475,7 @@ gets a direction node.
 
 `/rft` starts the interactive tree view (a local page; the user opens its address in a
 browser) and the outline pane; `/rft text` prints the tree; `/rft-view` writes a standalone
-`<vault>/tree.html`; Obsidian shows `Reasoning tree.canvas`. The user can edit a note's text
+`<vault>/tree.html`; `/rft-update` brings a vault made by an older version up to date (point the user to it when a session says the vault is older); Obsidian shows `Reasoning tree.canvas`. The user can edit a note's text
 (not its frontmatter), add notes with their default status, lock a note, set its priority (on the
 kanban, which shows the notes in one column per status), add footnotes and highlights, and
 comment on and suggest changes to a note's text in the tree view, so re-read a note before

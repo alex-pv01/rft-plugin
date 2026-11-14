@@ -1,8 +1,8 @@
 # Roadmap
 
 Planned work, split into release packages in the order they should ship. Each
-package is one minor version (the current release is 0.19.0, which also brings Alex's
-changes: note types, light theme, LaTeX, images, code repos) and lists what it contains, how it
+package is one minor version (the current release is 0.23.0; 0.20.0 brought Alex's PR #5: comments
+and suggestions, locked notes, priorities, deadlines and the calendar) and lists what it contains, how it
 could be done, and when it is done. A package builds only on the ones before it.
 
 | Version | Package | Depends on |
@@ -19,6 +19,14 @@ could be done, and when it is done. A package builds only on the ones before it.
 | 0.17.0 | Recall (done) | 0.16.0 |
 | 0.18.0 | Cheaper rebalancing (done) | 0.16.0 |
 | 0.19.0 | State of knowledge (done) | 0.16.0 |
+| 0.20.0 | Alex's PR #5 merged (done) | – |
+| 0.21.0 | Lean tool list (done) | 0.20.0 |
+| 0.22.0 | Rules on demand (done) | 0.20.0 |
+| 0.23.0 | Fixes from the PR #5 review (done) | 0.20.0 |
+| 0.24.0 | Ask Claude in a subagent (done) | 0.20.0 |
+| 0.25.0 | One note per literature search (done) | – |
+| 0.26.0 | /rft-update (done) | – |
+| 1.0.0 | One release with everything, measured (done) | 0.21.0–0.26.0 |
 
 ---
 
@@ -171,23 +179,168 @@ before (tokens, turns).
 
 ---
 
+## 0.20.0 — Alex's PR #5 merged (done)
+
+- Comments and suggestions on a note's text (Overleaf-style), with **Ask Claude**; locked notes;
+  a kanban view and the user's priorities; deadlines (milestones), experiment dates, GPUs, a
+  calendar page and `rft.ics`; a markdown renderer with footnotes and highlights.
+- Merged with 0.16–0.19 as it was: 204 plugin tests and 74 server tests pass.
+- Its cost, measured at the start of a session in a vault that uses none of it: the rules grow
+  by about 2,500 characters (four bullets: priorities, dates, locks, comments) and the tool
+  definitions from 19,700 to 27,300 characters (seven new tools, plus priority fields on
+  `rft_add_node`). About 2,500 tokens more in every session. The next two packages take
+  this back.
+
+## 0.21.0 — Lean tool list (done)
+
+Every tool used to be registered with `isDeferred: false`, so all 30 schemas sat in the prompt
+from the start. A deferred tool shows only its name until the model loads it with ToolSearch.
+
+- In the prompt from the start: `rft_add_node`, `rft_set_status`, `rft_set_summary`,
+  `rft_search`, `rft_map`, `rft_graph`, `rft_next`, `rft_move_node` (`hooks/lib/tools.ts`).
+- A feature's tools join them when the vault uses it, decided at activation: the date tools
+  when there is a milestone or a note with `due:` or `start:`, the priority tool when a note has
+  a priority or a suggested one, the comment tools when there is a comments file or a locked
+  note. Every other tool is deferred. No `tool.describe` hook was needed: the placement is given
+  at registration, and a later activation registers a tool again when its placement changed.
+- `rft_add_node`'s description is shorter.
+- Measured:
+  - Tool definitions in the prompt, in a vault that uses none of the features: from 27,300 to
+    8,800 characters.
+  - Session start on the replica vault (a trivial prompt, input tokens): 47,108 in 0.19,
+    50,652 in 0.20, 45,131 now. That is 5,500 fewer than 0.20 and 2,000 fewer than 0.19.
+  - Headless check: asked for the tags and the validator, Claude loaded `rft_tags` and
+    `rft_validate` through ToolSearch and answered in 4 turns.
+- Tests: `tests/tools.test.ts` covers a vault with no features and each feature's trigger, and
+  checks that a deferred tool still answers.
+
+## 0.22.0 — Rules on demand (done)
+
+- The four PR #5 rules enter the session's rules only when the vault uses the feature, on the
+  same conditions that bring its tools into the prompt (`hooks/lib/tools.ts`): priorities when
+  a note has `priority:` or a suggested one, dates when there is a milestone or a note with
+  `due:` or `start:`, locks when a note is locked, comments when a comments file exists.
+  Locks are now a group of their own: a locked note brings `rft_suggest` only, not the comment
+  tools.
+- For the features not in use, one line instead: priorities, dates and the text of a locked
+  note are the user's to set, and edits that change them are refused with the tool to suggest
+  a change instead. The refusals (`priorityText`, `datesText`, `lockedText`) already say the
+  rest; **Ask Claude**'s prompt says how to answer a thread on its own.
+- Activation reads the vault once, for the features, the project map and the deadlines.
+- Measured:
+  - Rules: about 2,200 characters shorter in a vault with none of the features, about 300
+    longer than 0.19's.
+  - Session start on the replica vault: 45,131 input tokens in 0.21, 44,455 now (50,652 in
+    0.20, 47,108 in 0.19).
+  - Headless check in a copy of the demo vault, which has no priorities: asked to make a note
+    urgent, Claude wrote a suggested priority and did not touch `priority:` (3 turns).
+- Tests: in `tests/tools.test.ts`, the rules with no features, with some, and with all of them.
+
+## 0.23.0 — Fixes from the PR #5 review (done)
+
+- **Footnotes are searched.** `withoutChildren` (vault.ts) cuts the "Children in the tree" list
+  the way `childrenAt` finds it, so the footnotes after it stay in `rft_search` and in the
+  rebalance words; the children's links still do not count as the note's words.
+- **The shell guards decide on the files a command writes** (`hooks/lib/shell.ts`). The command
+  is split into words with its quotes and escapes, a `cd` moves the folder, and the files written
+  are read from it: redirections, `tee`, `sed -i`, `perl -i`, `awk -i inplace`, `mv` and `cp`
+  (both ends), `rm`, `truncate`, `dd of=`. A glob matches as the shell would. A locked note is
+  refused when it is one of those files; a priority or a date when the command holds such a line
+  and writes a file in the vault. A command that only reads a note, or writes elsewhere while
+  mentioning `priority:`, now passes. A script run by an interpreter (python, node, a shell `-c`,
+  a heredoc) may write anything: for it the guards keep the old rule, the note or vault it names.
+- **`started:` and `finished:`** are written by `rft_set_status` only in a vault that uses dates
+  (a milestone, or a note with `due:` or `start:`).
+- Tests: `tests/shell.test.ts` (15 commands that write a note, 10 that do not, scripts, globs,
+  and the guard through tool calls both ways), a footnote search, `rft_set_status` in a vault
+  with no dates. 221 plugin tests and 74 server tests pass.
+
+## 0.24.0 — Ask Claude in a subagent (done)
+
+- **Ask Claude** starts a background subagent of the plugin's own type, `rft:thread`
+  (`$.agent.register`, hidden from the model by `agent.offer`), instead of a turn of the
+  session. The main conversation does not grow with each answer, and the answer starts at once,
+  without waiting for the session to be idle.
+- **The subagent only reads** (Read, Grep, Glob). A subagent the plugin starts runs beneath the
+  plugin's own call, where the plugin's hooks do not answer it: neither the rft tools nor the
+  guards of locked notes, priorities and dates would hold there (seen in a real session). So its
+  final message is the answer, and the plugin writes it into the thread when its
+  `turn.complete` arrives: a reply, or for a suggestion the text between `<replacement>` tags, a
+  replacement the user accepts or rejects. A suggestion is no longer applied to the note by
+  Claude; when the quoted text moved since, the replacement goes into the reply.
+- **Its report is dropped** before the main conversation reads it: the task notification, or the
+  hand-back message (`peer`) naming the subagent's id. The transcript keeps a dim
+  "Prompt dropped by a hook" line and no model turn.
+- When no subagent starts, the thread goes to the session as before (`askText`).
+- Checked in a real session: Ask Claude on a comment and on a suggestion each answered in the
+  thread, the note unchanged, and no new turn in the main transcript. 227 plugin tests pass.
+
+## 0.25.0 — One note per literature search (done)
+
+- **`/rft-literature` writes one literature note**, not a reference note per paper: an R note
+  tagged `literature`, titled `Literature on <topic>`, with sections Search, Papers (one `###`
+  entry per paper: link, claims, key results, relevance), Synthesis, Relevance and Directions
+  found. Notes for single papers, like directions and experiments, come only once the user
+  chooses them. The session rules and the manual say the same.
+- **A colour of its own**: cyan in the web view (and its legend), on the canvas and in the
+  Mermaid diagram; `▤` before its title in the pane, with a line in the pane's legend.
+- **PDFs per paper**: `rft_collect_papers` on a literature note downloads each entry's
+  open-access paper and links it with a `PDF:` line at the end of the entry. A saved PDF of a
+  literature note is not moved when its concept changes.
+- Tests: the note's sections, its papers, the download plan and the PDF lines, its colour in the
+  diagram and on the canvas; the /rft-literature prompt. 228 plugin tests and 74 server tests
+  pass.
+
+## 0.26.0 — /rft-update (done)
+
+- **The vault's format** is the config's `version` (`FORMAT` in vault.ts, now 2): it grows only
+  when what a vault holds changes, not with each release. New vaults get the current one; a
+  config with none is format 1.
+- **`/rft-update`** lists what the vault lacks next to what this plugin makes: the folders and
+  templates of each note type (an outdated template is replaced by the current one), the
+  config's format, and the changes of any migration between the two formats (`MIGRATIONS` in
+  update.ts, empty so far: add one when a format change has to rewrite what is there).
+  `/rft-update apply` writes them, then runs rft_sync and rft_validate. No model turn.
+- **Notes are not changed.** `--sections` also adds the sections each note's type has gained, as
+  empty headings before its children list; locked notes are left as they are and named.
+- **A toast at session start** when the vault's format is older (or newer) than the plugin's,
+  read from the config alone.
+- The demo vault in `examples/demo` is updated to format 2.
+- Checked on a copy of a real vault from format 1: two folders, four templates and the config
+  written, the diagram refreshed, 0 errors and 0 warnings, the notes untouched, and a second run
+  with nothing to do; 0 model turns. 232 plugin tests pass.
+
+## 1.0.0 — One release with everything, measured (done)
+
+- **The benchmark** (`bench/bench.py`): tasks run headless on fresh copies of a replica vault
+  (about 400 notes, 21 concepts), with 0.19.0 and with 1.0.0. Input tokens (input, cache
+  creation and cache reads), Opus:
+
+  | task | 0.19.0 | 1.0.0 | |
+  |---|---|---|---|
+  | session start ("Reply with just OK.") | 47,453 | 44,826 | −5.5% |
+  | a recall question ("have we tried …?") | 97,339 | 91,688 | −5.8% |
+  | adding a planned experiment (mean of 3) | 197,448 | 152,754 | −23% |
+  | `/rft-rebalance`, `/rft-next` | 0 | 0 | no model turn headless |
+
+  One run of adding an experiment gave 145k against 185k the other way round: a single run
+  varies with what the model chooses to read, hence the three runs. `/rft-rebalance` queues its
+  model turn for the next tick, which a headless run never reaches, so its model part is not
+  measured; the candidates it hands Claude are found locally, as in 0.19.
+- **Target met**: the session start is smaller than 0.19's, and no task costs more.
+- **The tree view, end to end**, in the desktop app's built-in browser on a copy of the demo:
+  a priority set on the kanban, a deadline added in the calendar, a comment and a suggestion
+  posted on a quote, the suggestion accepted into the note, a note locked, and the move dialog
+  of a locked note ("Move and unlock"); Ask Claude was checked in a real session in 0.24.0.
+  It found that the built-in browser refuses `confirm()` and `alert()`: Accept never wrote the
+  note, and an edited note could not be left. The page now asks with a second press ("Write
+  it?", or a notice for unsaved changes), and its errors show as a notice in the page.
+- **One coherent plugin**: README, the manual and this roadmap describe 1.0.0 (Ask Claude in the
+  background, literature notes, `/rft-update`, the vault's format, the benchmark).
+
+---
+
 ## Backlog
 
-Ideas for possible future work, not scheduled in a package yet.
+Ideas for possible future work, not scheduled in a package yet. None open at the moment.
 
-- **Answer threads in a subagent.** Today **Ask Claude** submits the thread as a turn of the
-  session that ran `/rft` (`askFromView` queues it, `submitPending` calls `$.prompt.submit`),
-  so every answer adds rows to the main chat. Instead, start a background subagent with
-  `$.agent.spawn({ prompt: askText(...) })`, perhaps of a type of the plugin's own
-  (`$.agent.register`, hidden from the model with `agent.offer`), and toast when its
-  `turn.complete` arrives. The answer lands in the thread, as now. Unlike `/btw`, it needs tools
-  (`rft_comment`, `rft_suggest`, Edit). The prompt from `askText` already holds what the
-  subagent needs, so a fresh agent should do; a fork would also see the conversation. It would
-  also start at once, without waiting for the session to be idle.
-  To check first: whether the finished subagent still leaves a task notification in the main
-  chat (if so, drop it in a `prompt.submit` hook); whether it gets the plugin's tools; whether
-  its Edit of an unlocked note is refused when it cannot ask for permission (the lock guard, a
-  `tool.call` hook, holds in subagents too); and what two asks on one note at once should do.
-
-  Done when: Ask Claude on a comment and on a suggestion each answer in the thread, and the
-  main transcript (ctrl+o) shows no new row.

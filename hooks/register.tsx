@@ -1,4 +1,4 @@
-// rft: the Reasoning Flow Tree plugin. Commands (/rft, /rft-init, /rft-concepts, /rft-literature, /rft-rebalance,
+// rft: the Reasoning Flow Tree plugin. Commands (/rft, /rft-init, /rft-concepts, /rft-literature, /rft-rebalance, /rft-update,
 // /rft-summarize, /rft-next, /rft-view), the model's tools (rft_add_node, rft_set_status, rft_set_summary, rft_map, rft_set_digest, rft_move_node, rft_set_refs, rft_search,
 // rft_graph, rft_supersede, rft_next, rft_suggest_priority, rft_suggest_dates, rft_add_deadline, rft_suggest_deadline, rft_collect_papers, rft_set_tags, rft_set_type, rft_set_concept, rft_concepts, rft_set_repos, rft_code,
 // rft_set_code, rft_tags, rft_tree, rft_validate, rft_sync, rft_comments, rft_comment, rft_suggest), the operating rules
@@ -16,12 +16,12 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { RftSnapshot } from '../types'
-import { COMMENTS_DIR, LockedChange, askText, comment as addComment, commentsReport, isLocked, readComments, suggest as addSuggestion } from './lib/comments'
+import { COMMENTS_DIR, LockedChange, answerThread, askText, comment as addComment, commentsReport, isLocked, readComments, subagentAskText, suggest as addSuggestion } from './lib/comments'
 import type { CodeEnv, Git } from './lib/ops'
 import { addNode, codeReport, conceptsReport, exportHtml, initVault, loadActive, lockedText, moveNode, rulesText, setCode, setConcept, setRefs, setRepos, setStatus, setTags, setType, tagsReport, today, treeReport } from './lib/ops'
 import { ASSET_PATHS } from './lib/page'
 import type { Config, Io, Loaded, NodeType, Tree } from './lib/vault'
-import { OPEN_HOSTS, planPapers } from './lib/papers'
+import { OPEN_HOSTS, jobNote, planPapers, withEntryPdf } from './lib/papers'
 import { searchReport, similarNotes } from './lib/search'
 import { graphReport } from './lib/graph'
 import { candidates, candidatesReport } from './lib/rebalance'
@@ -29,8 +29,13 @@ import { nextReport, supersede } from './lib/knowledge'
 import { changesPriority, priorityText, suggestPriority } from './lib/priority'
 import { addDeadline, changesDates, checkDeadline, datesText, deadlineQuestion, deadlinesLine, suggestDates, suggestDeadline } from './lib/schedule'
 import { RECALL_HINT, searchesVault } from './lib/recall'
+import { eagerTools, featuresInUse } from './lib/tools'
+import { matches, shellWrites } from './lib/shell'
+import { Answers, type ThreadJob } from './lib/answers'
+import { applyUpdate, behindLine, planText, planUpdate } from './lib/update'
+import type { Feature } from './lib/tools'
 import { SMALL_TREE, mapGaps, mapReport, mapWarnings, projectMap, readDigests, resolveConcept, setDigest, setSummaries } from './lib/map'
-import { CONFIG_PATH, LEGEND, MARK, NODE_TYPES, bodyOf, counts, countsLine, isAbsolute, join, locate, readConfig, resolveId, resolvePath, rooted, setField, signatureOf, sync, validate } from './lib/vault'
+import { CONFIG_PATH, LEGEND, MARK, NODE_TYPES, bodyOf, isLiterature, counts, countsLine, isAbsolute, join, locate, readConfig, resolveId, resolvePath, rooted, setField, signatureOf, sync, validate } from './lib/vault'
 
 const PANE = 'rft-tree'
 const TITLE = 'Reasoning tree'
@@ -84,7 +89,7 @@ const treeOf = (s: RftSnapshot): Tree => ({ nodes: s.nodes, roots: s.roots, conc
 const TOOLS = {
   rft_add_node: {
     description:
-      'Add a node to the reasoning tree: an experiment (something run or computed), a direction (an idea, question or hypothesis, rejected ones included), a reference (a paper, method or literature review that was read, summarised and commented, with a source that can be checked) or a theory note (a definition, method, taxonomy or argument of the project\'s own, built on the other notes). Assigns the next free id, sanitises the title, writes the note from the template, links it under its parent and regenerates the index and canvas. Create an experiment BEFORE launching it (status planned or running). In a concept that links code, an experiment or direction gets a ## Code section with the repos\' current commits: read the code first and pass its description as sections.Code, or write it after with rft_set_code.',
+      'Add a node to the reasoning tree: an experiment (something run or computed), a direction (an idea, question or hypothesis, rejected ones included), a reference (a paper, method or literature review that was read, summarised and commented, with a source that can be checked) or a theory note (a definition, method, taxonomy or argument of the project\'s own, built on the other notes). Assigns the id and links it under its parent. Create an experiment BEFORE launching it (status planned or running). In a concept that links code, the note gets a ## Code section with the repos\' commits: pass sections.Code after reading the code, or use rft_set_code later.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -101,7 +106,7 @@ const TOOLS = {
         tags: { type: 'array', items: { type: 'string' }, description: '1-3 short topical tags, lowercase kebab-case, reused from rft_tags when they fit (the project, type and status tags are added anyway).' },
         refs: { type: 'array', items: { type: 'string' }, description: 'Ids of the reference notes (R..) it builds on: for an experiment, the paper(s) whose setup it starts from; for a direction, the work it extends. Add missing references first.' },
         summary: { type: 'string', description: 'One line (at most 240 characters) on what the note is about, specific enough to read instead of the note: what is tested and on what, the idea, the paper\'s main claim. Always give it.' },
-        suggested_priority: { type: 'string', enum: ['urgent', 'high', 'medium', 'low'], description: 'Optional: the priority you suggest for this work, only with a clear reason. The note itself gets no priority (the user\'s alone); they accept or dismiss the suggestion in the tree view.' },
+        suggested_priority: { type: 'string', enum: ['urgent', 'high', 'medium', 'low'], description: 'Optional, only with a clear reason: a priority to suggest; the user accepts or dismisses it.' },
         priority_why: { type: 'string', description: 'With suggested_priority: why, in one line (what it unblocks, what makes it pressing or not).' },
       },
       required: ['type', 'title'],
@@ -442,7 +447,8 @@ let recall: { vault: string; cwd: string; used: boolean } | null = null
 let poller: { cancel: () => void } | null = null
 // prompts for Claude to answer, from a command or the tree view, submitted by the poller
 const pendingPrompts: string[] = []
-const registeredTools = new Set<string>()
+// each registered tool and whether it waits behind ToolSearch, so a new placement registers it again
+const registeredTools = new Map<string, boolean>()
 
 const EMPTY: RftSnapshot = { isActive: false, vault: '', project: '', nodes: {}, roots: [], concepts: {}, signature: '', problems: [], error: null }
 
@@ -493,29 +499,44 @@ async function activate($: EngineInterface, shouldOpen: boolean): Promise<void> 
   } catch (err) {
     failed.push(`reading the vault (${message(err)})`)
   }
+  // the core tools and the tools of the features the vault uses sit in the prompt, and their rules in the rules; the rest wait behind ToolSearch
+  let features = new Set<Feature>()
+  let loaded: Loaded | null = null
+  if (h && config) {
+    try {
+      loaded = await loadActive(h.io)
+      const threads = (await h.io.list(join(config.vault, COMMENTS_DIR)).catch(() => [])).some(f => f.name.endsWith('.json'))
+      features = featuresInUse(loaded, threads)
+    } catch { /* the core tools only */ }
+    // a vault an older version made: one toast, nothing changed until /rft-update apply
+    const line = behindLine(config)
+    if (line) $.ui.toast(line)
+  }
   if (s && config && h) {
     // a large tree starts from the project map; a small one from its list of notes
     let map: string | undefined
-    if (Object.keys(s.nodes).length > SMALL_TREE) {
+    if (loaded && Object.keys(s.nodes).length > SMALL_TREE) {
       try {
-        const loaded = await loadActive(h.io)
         map = projectMap(loaded, await readDigests(h.io, loaded))
       } catch { /* the list of notes instead */ }
     }
-    rules = rulesText(treeOf(s), config, shownVault(h, config), { cwd: h.cwd, root: h.root, home: await homeOf($) }, map)
+    rules = rulesText(treeOf(s), config, shownVault(h, config), { cwd: h.cwd, root: h.root, home: await homeOf($) }, map, features)
     // the deadlines close at hand that are at risk, so the session starts from them
     try {
-      const line = deadlinesLine(await loadActive(h.io), today())
+      const line = loaded ? deadlinesLine(loaded, today()) : null
       if (line) rules += `\n\n${line}`
     } catch { /* the rules without it */ }
     recall = { vault: resolvePath(h.root, vaultOf(h, config)), cwd: h.cwd, used: false }
   }
+  await registerThreadAgent($)
+  const eager = eagerTools(features)
   // each registration on its own, so one refusal leaves the rest working
   for (const [name, spec] of Object.entries(TOOLS)) {
-    if (registeredTools.has(name)) continue
+    const isDeferred = !eager.has(name)
+    if (registeredTools.get(name) === isDeferred) continue
     try {
-      await $.tool.register({ name, description: spec.description, inputSchema: spec.inputSchema as Record<string, unknown>, isDeferred: false })
-      registeredTools.add(name)
+      await $.tool.register({ name, description: spec.description, inputSchema: spec.inputSchema as Record<string, unknown>, isDeferred })
+      registeredTools.set(name, isDeferred)
     } catch (err) {
       failed.push(`tool ${name} (${message(err)})`)
     }
@@ -562,6 +583,7 @@ async function registerCommands($: EngineInterface): Promise<void> {
   await attempt('rft-rebalance', () => $.command.register({ name: 'rft-rebalance', description: 'Ask Claude to propose moving branches under the line of research they belong to; nothing moves until you confirm', argumentHint: '[concept or note id] [--full]' }))
   await attempt('rft-next', () => $.command.register({ name: 'rft-next', description: 'What is still open, by concept: running and planned experiments, unexplored directions, open questions', argumentHint: '[concept]' }))
   await attempt('rft-summarize', () => $.command.register({ name: 'rft-summarize', description: 'Ask Claude to write the missing one-line note summaries and concept digests (the project map)', argumentHint: '[concept]' }))
+  await attempt('rft-update', () => $.command.register({ name: 'rft-update', description: 'Bring a vault made by an older version up to this one: shows what it adds; apply writes it', argumentHint: '[apply] [--sections]' }))
   await attempt('rft-view', () => $.command.register({ name: 'rft-view', description: 'Write a standalone HTML view of the tree to <vault>/tree.html' }))
   if (failed.length) reportFailures($, failed)
 }
@@ -877,9 +899,54 @@ async function askFromView($: EngineInterface, request: string): Promise<void> {
     const n = loaded.tree.nodes[id]
     if (!n) throw new Error(`"${id}" is not a note of the tree`)
     const c = await readComments(h.io, loaded.config.vault, id)
-    pendingPrompts.push(askText(loaded, c, id, String(r.thread ?? ''), join(shownVault(h, loaded.config), n.path)))
+    const thread = String(r.thread ?? '')
+    const path = join(shownVault(h, loaded.config), n.path)
+    await answerInSubagent($, { id, thread, what: `thread ${thread} on ${id}` }, subagentAskText(loaded, c, id, thread, path), () => askText(loaded, c, id, thread, path))
   } catch (err) {
     $.ui.toast(`rft: the tree view could not ask Claude (${message(err)})`)
+  }
+}
+
+// ---------------------------------------------------------------- answers in a subagent
+
+/**
+ * The agent type that answers a thread: it only reads, and its final message is the answer, which
+ * the plugin writes into the thread when it ends. A subagent the plugin starts runs beneath the
+ * plugin's own call, where the plugin's hooks (its tools, the guards of locked notes, priorities
+ * and dates) do not answer it, so it is given neither the rft tools nor a tool that writes.
+ */
+const THREAD_AGENT = {
+  name: 'thread',
+  description: 'Answers a comment or suggestion thread of the rft tree view (started by the plugin only).',
+  prompt: 'You answer one discussion thread on a note of a research project\'s reasoning tree (rft); the notes are markdown files in the vault. The task says which thread and what your final message holds: the plugin writes it into the thread as it is, so it is the answer itself, with nothing about what you did.',
+  tools: ['Read', 'Grep', 'Glob'],
+} as const
+// `rft:thread` once registered; until then (or when refused) the general-purpose agent answers
+let threadAgent: string | null = null
+// the subagents answering threads
+const answers = new Answers()
+
+async function registerThreadAgent($: EngineInterface): Promise<void> {
+  if (threadAgent) return
+  try {
+    threadAgent = (await $.agent.register({ ...THREAD_AGENT, tools: [...THREAD_AGENT.tools] })).agent
+  } catch { /* the general-purpose agent instead */ }
+}
+
+/**
+ * Answers a thread in a background subagent, so the main conversation does not grow with each
+ * Ask Claude; when no subagent can start, as a turn of the session, as before.
+ */
+async function answerInSubagent($: EngineInterface, job: ThreadJob, prompt: string, inSession: () => string): Promise<void> {
+  try {
+    if (!threadAgent) throw new Error('no thread agent')
+    const r = await $.agent.spawn({ prompt, description: `rft: answer ${job.what}`, subagentType: threadAgent })
+    const deny = (r as { deny?: string }).deny
+    if (deny || !r.agentId) throw new Error(deny ?? 'no subagent started')
+    answers.watch(r.agentId, job)
+    $.ui.toast(`rft: Claude is answering ${job.what} in the background`)
+  } catch {
+    pendingPrompts.push(inSession())
   }
 }
 
@@ -938,13 +1005,17 @@ function runPapers($: EngineInterface, h: Here, child: ReturnType<EngineInterfac
   })()
 }
 
-/** Writes `pdf: "[[<file>]]"` into the reference note (read afresh: the user may have edited it). */
-async function linkPaper(h: Here, id: string, file: string): Promise<void> {
+/**
+ * Writes `pdf: "[[<file>]]"` into the reference note, or for one paper of a literature note
+ * (`R05#2`) a `PDF:` line in its entry (read afresh: the user may have edited it).
+ */
+async function linkPaper(h: Here, job: string, file: string): Promise<void> {
+  const { id, entry } = jobNote(job)
   const loaded = await loadActive(h.io)
   const n = loaded.tree.nodes[id]
   if (!n) return
   const text = loaded.texts[id]!
-  const next = setField(text, 'pdf', `"[[${file}]]"`, 'tags')
+  const next = entry ? withEntryPdf(text, entry, file) : setField(text, 'pdf', `"[[${file}]]"`, 'tags')
   if (next !== text) await h.io.write(join(loaded.config.vault, n.path), next)
 }
 
@@ -1040,9 +1111,25 @@ async function submitPending($: EngineInterface): Promise<void> {
 }
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
-// a shell command that may write a file: a redirection, an in-place editor, a move, copy or
-// removal, a script
-const SHELL_WRITES = /(^|[^<>&0-9])>{1,2}(?!&)|\b(tee|mv|cp|rm|truncate|dd|python3?|node|ruby|perl|sed\s[^|;&]*-i|awk\s[^|;&]*-i)\b/
+
+type SnapNode = RftSnapshot['nodes'][string]
+
+/**
+ * What a shell command writes in the vault: the notes among the files it writes, whether any of
+ * them is in the vault, and whether it runs a script (whose writes the command does not show).
+ */
+async function shellTouches($: EngineInterface, cmd: string, vault: string, nodes: SnapNode[]) {
+  const w = shellWrites(cmd, resolvePath(await $.session.cwd(), '.'))
+  return {
+    files: w.files,
+    notes: nodes.filter(n => w.files.some(f => matches(f, join(vault, n.path)))),
+    inVault: w.files.some(f => f.startsWith(`${vault}/`)),
+    script: w.script,
+  }
+}
+
+/** For a script, whose writes are not known: the note the command names, by name or id. */
+const namedIn = (cmd: string, nodes: SnapNode[]) => nodes.find(n => cmd.includes(n.name) || new RegExp(`\\b${n.id}\\b`).test(cmd)) ?? null
 const COMMENTS_BY_HAND = `The tree view and the rft tools write the comments files (${COMMENTS_DIR}/): use rft_comment and rft_suggest.`
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
@@ -1059,13 +1146,16 @@ async function lockedEdit($: EngineInterface, e: Record<string, unknown>): Promi
   const vault = resolvePath(s.vault, '.')
   if (tool === 'Bash') {
     const cmd = String(e.command ?? '')
-    if (!SHELL_WRITES.test(cmd)) return null
-    if (cmd.includes(`${COMMENTS_DIR}/`)) return COMMENTS_BY_HAND
+    const t = await shellTouches($, cmd, vault, Object.values(s.nodes))
+    if (t.files.some(f => f.startsWith(`${vault}/${COMMENTS_DIR}/`)) || (t.script && cmd.includes(`${COMMENTS_DIR}/`))) return COMMENTS_BY_HAND
+    const locked = t.notes.find(n => n.locked)
+    if (locked) return lockedText(locked)
+    if (!t.script) return null
+    // a script: the locked note it names by its file name (the id, then the title's first word, or a glob)
     for (const n of Object.values(s.nodes)) {
       if (!n.locked) continue
       const word = escapeRe(n.title.split(' ')[0] ?? '')
-      const named = cmd.includes(n.name) || new RegExp(`\\b${n.id}(?:[*?]|(?:\\\\ | )${word})`).test(cmd)
-      if (named) return lockedText(n)
+      if (cmd.includes(n.name) || new RegExp(`\\b${n.id}(?:[*?]|(?:\\\\ | )${word})`).test(cmd)) return lockedText(n)
     }
     return null
   }
@@ -1114,8 +1204,12 @@ async function priorityEdit($: EngineInterface, e: Record<string, unknown>): Pro
   const vault = resolvePath(s.vault, '.')
   if (tool === 'Bash') {
     const cmd = String(e.command ?? '')
-    if (!SHELL_WRITES.test(cmd) || !PRIORITY_LINE.test(cmd)) return null
-    const named = Object.values(s.nodes).find(n => cmd.includes(n.name) || new RegExp(`\\b${n.id}\\b`).test(cmd)) ?? null
+    if (!PRIORITY_LINE.test(cmd)) return null
+    const t = await shellTouches($, cmd, vault, Object.values(s.nodes))
+    if (t.notes.length || t.inVault) return priorityText(t.notes[0] ?? null)
+    if (!t.script) return null
+    // a script: the vault or a note it names
+    const named = namedIn(cmd, Object.values(s.nodes))
     const folder = vault.split('/').pop()
     return named || cmd.includes(vault) || (folder && cmd.includes(`${folder}/`)) ? priorityText(named) : null
   }
@@ -1146,8 +1240,12 @@ async function datesEdit($: EngineInterface, e: Record<string, unknown>): Promis
   const vault = resolvePath(s.vault, '.')
   if (tool === 'Bash') {
     const cmd = String(e.command ?? '')
-    if (!SHELL_WRITES.test(cmd) || !DATE_LINE.test(cmd)) return null
-    const named = Object.values(s.nodes).find(n => cmd.includes(n.name) || new RegExp(`\\b${n.id}\\b`).test(cmd)) ?? null
+    if (!DATE_LINE.test(cmd)) return null
+    const t = await shellTouches($, cmd, vault, Object.values(s.nodes))
+    if (t.notes.length || t.inVault) return datesText(t.notes[0] ?? null)
+    if (!t.script) return null
+    // a script: the vault or a note it names
+    const named = namedIn(cmd, Object.values(s.nodes))
     const folder = vault.split('/').pop()
     return named || cmd.includes(vault) || (folder && cmd.includes(`${folder}/`)) ? datesText(named) : null
   }
@@ -1166,7 +1264,7 @@ async function datesEdit($: EngineInterface, e: Record<string, unknown>): Promis
  * The literature search: `subject` is a topic in words, a note id or a concept name; the
  * references go under that note, the concept's start note, or the note the topic belongs to.
  */
-const literaturePrompt = (subject: string, where: string | null) => `Run a thorough literature search on ${JSON.stringify(subject)} for this project (rft-manual skill, "Literature"). ${where ? `Place the references under ${where}.` : 'First find where it belongs in the tree (rft_tree, rft_concepts): the note or concept it is about; if it opens a new field, ask me where to put it before adding notes.'} Use the search tools you have (web search, deep research, arXiv); prefer peer-reviewed papers, well-known preprints and surveys, the most cited and the most recent. Read each source before writing about it. For each key paper (usually 4 to 10), add one reference note with rft_add_node (type reference): Source with a link that can be checked (DOI, arXiv id or URL), Summary, Method, Key results as the paper reports them (with the table or section), and under Relevance what it means for this project; status done once summarised from the paper itself, planned if only found. Never invent a citation or a result. Once the notes are written, call rft_collect_papers with their ids: it saves the open-access PDFs in the background. Then give me a short synthesis: what is known, what is open, which setups an experiment could start from; list the directions it suggests and ask which ones to add. Do not add directions or experiments until I say which.`
+const literaturePrompt = (subject: string, where: string | null) => `Run a thorough literature search on ${JSON.stringify(subject)} for this project (rft-manual skill, "Literature"). ${where ? `Place it under ${where}.` : 'First find where it belongs in the tree (rft_tree, rft_concepts): the note or concept it is about; if it opens a new field, ask me where to put it before adding a note.'} Use the search tools you have (web search, deep research, arXiv); prefer peer-reviewed papers, well-known preprints and surveys, the most cited and the most recent. Read each source before writing about it; never invent a citation or a result. Write the whole search as ONE literature note, not a note per paper: rft_add_node with type reference, tags ["literature"], title "Literature on <topic>", status done, and sections Search (what was searched, with which tools, on what date), Papers (one entry per key paper, usually 4 to 10, each starting with a "### <year> <first author> — <title>" line, then a link that can be checked (DOI, arXiv id or URL), what it claims and how, its key results as reported (with the table or section), and what it means for this project), Synthesis (what is known, what is open, which setups an experiment could start from) and Relevance (in a line or two). Then call rft_collect_papers with the note's id: it saves the open-access PDFs in the background and links each under its entry. Then give me a short synthesis in the chat and list the directions it suggests, and the papers that deserve a reference note of their own; add those only once I say which.`
 
 /** The rebalancing request; `scope` (a concept name or a note id) narrows it to one part of the tree. */
 const rebalancePrompt = (scope: string) => `Propose a rebalancing of the reasoning tree (rft-manual skill, "Restructuring the tree")${scope ? `, limited to ${JSON.stringify(scope)} (a concept or a note: consider the branches in it, and moves into it or out of it)` : ''}. Over time some branches grow out of one line of research but belong to another: an experiment hung under the note that happened to come before it, an idea that opened a different line, a branch that would sit better under another concept. Start from the map: rft_map, then rft_map <concept> for the concepts involved (their digests and one-line note summaries); read a note's file only when its summary leaves the move in doubt. For each branch that clearly belongs elsewhere, propose one move: the note to move (its subtree goes with it), its parent now, the new parent, and why in one line. Keep the tree's history in mind: a note that came out of a result stays where the reasoning produced it unless it really is part of another line; when in doubt, leave it. Moves only: if a new concept would help, say so separately (rft_set_concept, after the user agrees). Present the moves as a short numbered table, say what you would leave as it is, and ask me which moves to apply. Do not call rft_move_node until I say yes; then apply only the moves I confirm, each with its why, and finish with rft_validate.`
@@ -1212,6 +1310,32 @@ export const register: Register = (on, options) => {
 
     return next(e)
   })
+
+  // a thread's subagent finished: its final message goes into the thread, and its report is kept
+  // from the main conversation
+  on('turn.complete', async ($, e, next) => {
+    const job = answers.ended(e.agentId)
+    if (job) {
+      try {
+        if (e.isAborted || !e.answer?.trim()) throw new Error('stopped')
+        const h = await mustHere($)
+        await answerThread(h.io, await loadActive(h.io), job.id, job.thread, e.answer)
+        $.ui.toast(`rft: ${job.what} answered in the tree view`)
+        await refresh($, true)
+      } catch (err) {
+        $.ui.toast(`rft: ${job.what} was not answered (${message(err)})`)
+      }
+    }
+    return next(e)
+  })
+
+  on('prompt.submit', async ($, e, next) => {
+    if (answers.isNotification(e.text, e.origin?.kind)) return { drop: 'rft: a thread answer, already in the tree view' }
+    return next(e)
+  })
+
+  // the thread agent is the plugin's own: the model is not offered it
+  on('agent.offer', { agent: 'rft:thread' }, () => ({ isOffered: false }))
 
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
@@ -1311,7 +1435,7 @@ export const register: Register = (on, options) => {
       const concept = Object.values(loaded.tree.concepts ?? {}).find(c => c.root && c.name.toLowerCase() === subject.toLowerCase())
       const where = id ? loaded.tree.nodes[id]!.name : concept ? `${loaded.tree.nodes[concept.root!]!.name} (the start of the concept "${concept.name}")` : null
       pendingPrompts.push(literaturePrompt(id ? `${loaded.tree.nodes[id]!.title}` : concept ? concept.name : subject, where))
-      return { text: `Claude will search the literature on ${where ?? JSON.stringify(subject)} in a moment and add what it reads as reference notes; directions and experiments only after you choose.` }
+      return { text: `Claude will search the literature on ${where ?? JSON.stringify(subject)} in a moment and write it as one literature note; notes for single papers, directions and experiments only after you choose.` }
     } catch (err) {
       return { text: message(err) }
     }
@@ -1332,6 +1456,31 @@ export const register: Register = (on, options) => {
       }
       // submitted by the poller, as for /rft-concepts suggest
       return { text: `${conceptsReport(loaded)}\n\nClaude will propose moves in a moment, as a table${full ? '' : ', from the candidates the plugin found'}; nothing moves until you confirm.` }
+    } catch (err) {
+      return { text: message(err) }
+    }
+  })
+
+  // /rft-update: what an older vault lacks; `apply` writes it, then the derived files are synced
+  on('command.run', { command: 'rft-update' }, async ($, e) => {
+    try {
+      const words = e.args.trim().split(/\s+/).filter(Boolean)
+      const unknown = words.filter(w => w !== 'apply' && w !== '--sections')
+      if (unknown.length) return { text: `Usage: /rft-update [apply] [--sections] (not ${unknown.join(' ')}).` }
+      const sections = words.includes('--sections')
+      const io = (await mustHere($)).io
+      const loaded = await loadActive(io)
+      const plan = await planUpdate(io, loaded, { sections })
+      if (!words.includes('apply') || !plan.changes.length || plan.from > plan.to) return { text: planText(plan, sections) }
+      await applyUpdate(io, plan)
+      const fresh = await loadActive(io)
+      const synced = await sync(io, fresh)
+      const check = await validate(io, await loadActive(io))
+      await refresh($, true)
+      return {
+        text: `Updated the vault to format ${plan.to}: ${plan.changes.length} file(s) written${synced.changed.length ? `, ${synced.changed.length} derived file(s) refreshed` : ''}. ` +
+          `Validation: ${check.errors.length} errors, ${check.warnings.length} warnings${check.errors.length + check.warnings.length ? ' (rft_validate lists them).' : '.'}`,
+      }
     } catch (err) {
       return { text: message(err) }
     }
@@ -1462,6 +1611,7 @@ export const register: Register = (on, options) => {
             ? <Button key={`fold-${id}`} plain onPress={() => toggleFold($, id)}>{isFolded ? '▸' : '▾'}</Button>
             : <Text dimColor>·</Text>}
           <Text color={STATUS_COLOR[n.status] ?? 'inactive'}>{` ${MARK[n.status] ?? '-'} `}</Text>
+          {isLiterature(n) ? <Text color="ide">{`${LITERATURE_MARK} `}</Text> : null}
           <Button key={`node-${id}`} label={`${n.id} ${title}${isFolded ? ` +${n.children.length}` : ''}`} plain onPress={() => selectNode($, id)} />
           {sel === id ? <Text color="claude">{' ◀'}</Text> : null}
         </Box>,
@@ -1501,7 +1651,7 @@ export const register: Register = (on, options) => {
           : <Text dimColor>Run /rft for the interactive tree view in a browser.</Text>}
         {s.error ? <Text color="error">{s.error}</Text> : null}
         {s.problems.length ? <Text color="warning">{`${s.problems.length} problem(s), e.g. ${s.problems[0]}`}</Text> : null}
-        <Text dimColor>{LEGEND}</Text>
+        <Text dimColor>{`${LEGEND} · ${LITERATURE_MARK} literature search`}</Text>
         <Box flexDirection="row" gap={1} flexWrap="wrap">
           <Button key="fold-all" label="Fold all" onPress={() => foldAll($, foldable)} />
           <Button key="unfold-all" label="Unfold all" onPress={() => foldAll($, [])} />
@@ -1514,6 +1664,9 @@ export const register: Register = (on, options) => {
 }
 
 const READ_ONLY = /^(Read|Grep|Glob|LS|WebFetch|WebSearch|ToolSearch|TodoWrite)$/
+
+/** The pane's mark of a literature note (the web view and the canvas give it a colour of its own). */
+const LITERATURE_MARK = '▤'
 
 const STATUS_COLOR: Record<string, 'success' | 'warning' | 'suggestion' | 'error' | 'inactive' | 'ide'> = {
   done: 'success', running: 'warning', planned: 'suggestion', idea: 'suggestion',

@@ -16,6 +16,8 @@ import {
   withTopicalTags, writeConfig,
 } from './vault'
 import { cleanSummary, withSummary } from './map'
+import type { Feature } from './tools'
+import { featuresInUse } from './tools'
 import { checkSuggestion, fullText } from './priority'
 
 /** Why Claude may not change a locked note's text, and what it does instead. */
@@ -358,7 +360,9 @@ export function tagsReport(loaded: Loaded): string {
 /**
  * Changes a note's status, with a note appended and a new summary when given. With `date`, a
  * note that starts running records that day (`started:`, once) and one done records it too
- * (`finished:`): the calendar's runs, and real durations to set against the estimates.
+ * (`finished:`): the calendar's runs, and real durations to set against the estimates. Only in a
+ * vault that uses dates (a milestone, or a note with `due:` or `start:`), so other vaults' notes
+ * do not change.
  */
 export async function setStatus(io: Io, loaded: Loaded, ref: string, status: string, note?: string, summary?: string, date?: string): Promise<string> {
   const id = resolveId(loaded.tree, ref)
@@ -369,8 +373,9 @@ export async function setStatus(io: Io, loaded: Loaded, ref: string, status: str
   if (note && isLocked(prev)) throw new RftError(lockedText(n, 'set the status without a note, and propose the text with rft_suggest'))
   let next = withStatus(prev, n, status, note)
   if (summary?.trim()) next = withSummary(next, summary)
-  if (date && status === 'running' && !front(next).started) next = setField(next, 'started', date, 'status')
-  if (date && status === 'done' && n.status !== 'done') next = setField(next, 'finished', date, front(next).started ? 'started' : 'status')
+  const dated = date && featuresInUse(loaded, false).has('dates')
+  if (dated && status === 'running' && !front(next).started) next = setField(next, 'started', date, 'status')
+  if (dated && status === 'done' && n.status !== 'done') next = setField(next, 'finished', date, front(next).started ? 'started' : 'status')
   await io.write(join(loaded.config.vault, n.path), next)
   const fresh = await load(io, loaded.config)
   const report = await sync(io, fresh)
@@ -735,7 +740,28 @@ function codeContext(tree: Tree, where: { cwd?: string; root?: string; home?: st
  * `where`: the session's folder and the tree's (and the home folder), to say which concept's code
  * the session runs in.
  */
-export function rulesText(tree: Tree, config: Config, vault = config.vault, where: { cwd?: string; root?: string; home?: string } = {}, map?: string): string {
+/**
+ * The rules of the features the vault uses (priorities, dates, locked notes, comment threads), in
+ * full; for the others one line, since a refused edit says the rest when it matters.
+ */
+function featureRules(vault: string, features: ReadonlySet<Feature>): string {
+  const full: Record<Feature, string> = {
+    priorities: `- Priorities (\`priority:\` urgent, high, medium or low; at most 1 urgent, 5 high and 10 medium among the open notes) are the user's alone: never write \`priority:\` (Edit, Write and shell writes that change it are refused), and a new note gets none. When you have a clear reason (it unblocks other work, the user said it matters, it is cheap and decisive), suggest one: rft_suggest_priority {id, priority, why}, or rft_add_node's suggested_priority and priority_why; the user accepts or dismisses it in the tree view. Work on what the user made urgent or high first.`,
+    dates: `- Dates are the user's too: deadlines (milestones in \`${vault}/milestones/\`, outside the tree: \`due:\` and the notes they \`needs:\`), a note's own \`due:\`, an experiment's \`start:\` and \`est:\` (3d, 2w). Never write them (edits that change them are refused). Suggest a start or an estimate with rft_suggest_dates {id, start, est, why}; add a deadline the user gives you with rft_add_deadline (they confirm it); suggest a paper submission only when the user names a venue or asks, with rft_suggest_deadline and the venue's official dates page read now, not from memory. Write \`gpus:\` on an experiment that takes more than one GPU and \`after:\` on one that waits for another run; rft_set_status records the days a run started and finished. rft_next lists the deadlines first, with what puts them at risk.`,
+    locks: `- A note with \`locked: true\` in its frontmatter is the user's: never change its text (Edit, Write and shell writes to it are refused, and so are rft_set_status notes and rft_set_code on it). Propose each change with rft_suggest {id, quote, replacement}; the user accepts or rejects it in the tree view. Its status, tags and derived fields still change through the rft tools. Moving it (rft_move_node) or marking it superseded (rft_supersede) writes a line in its History, so the plugin first asks the user whether to unlock it; if they keep it locked the call fails: do not retry it.`,
+    comments: `- The user discusses notes in the tree view: comments and suggestions on a part of a note's text (rft_comments lists them). Answer a thread only when the user asks you to: the tree view's Ask Claude sends it to you, and you answer in the thread with rft_comment or rft_suggest, not in the chat.`,
+  }
+  const out = (['priorities', 'dates', 'locks', 'comments'] as const).filter(f => features.has(f)).map(f => full[f])
+  const absent = [
+    features.has('priorities') ? '' : 'priorities (\`priority:\`)',
+    features.has('dates') ? '' : `dates (\`due:\`, \`start:\`, \`est:\`, deadlines in \`${vault}/milestones/\`)`,
+    features.has('locks') ? '' : 'the text of a note with \`locked: true\`',
+  ].filter(Boolean)
+  if (absent.length) out.push(`- These are the user's to set, never yours: ${absent.join(', ')}. Edits that change them are refused, with the tool to suggest a change instead.`)
+  return out.map(l => `${l}\n`).join('')
+}
+
+export function rulesText(tree: Tree, config: Config, vault = config.vault, where: { cwd?: string; root?: string; home?: string } = {}, map?: string, features: ReadonlySet<Feature> = new Set()): string {
   let lines = (map ?? groupedTree(tree)).split('\n')
   if (lines.length > MAX_LINES) lines = [...lines.slice(0, MAX_LINES), `… ${lines.length - MAX_LINES} more (${map ? 'rft_map' : 'rft_tree'} shows them)`]
   return `# Reasoning Flow Tree (rft) is active in this project
@@ -747,13 +773,11 @@ The reasoning of this research project is kept as a tree of Obsidian notes in \`
 - Each concept can have a digest (vault \`map/\`): its state, key results, dead ends, open questions. After a piece of work changes a concept (a result, a dropped line, a new branch), or when rft_map says its digest is missing or out of date and you have read its notes, rewrite it with rft_set_digest.
 - When a result overturns an earlier one (a corrected number, a bug in the run, a better-controlled rerun), mark the old note with rft_supersede (id, by, why) and update the concept's digest: a note shown as [superseded by …] is not to be built on.
 - When asked what to do next, or before opening new work, call rft_next: the user's priorities first, then running and planned experiments, directions with nothing tried under them, the digests' open questions.
-- Priorities (\`priority:\` urgent, high, medium or low; at most 1 urgent, 5 high and 10 medium among the open notes) are the user's alone: never write \`priority:\` (Edit, Write and shell writes that change it are refused), and a new note gets none. When you have a clear reason (it unblocks other work, the user said it matters, it is cheap and decisive), suggest one: rft_suggest_priority {id, priority, why}, or rft_add_node's suggested_priority and priority_why; the user accepts or dismisses it in the tree view. Work on what the user made urgent or high first.
-- Dates are the user's too: deadlines (milestones in \`${vault}/milestones/\`, outside the tree: \`due:\` and the notes they \`needs:\`), a note's own \`due:\`, an experiment's \`start:\` and \`est:\` (3d, 2w). Never write them (edits that change them are refused). Suggest a start or an estimate with rft_suggest_dates {id, start, est, why}; add a deadline the user gives you with rft_add_deadline (they confirm it); suggest a paper submission only when the user names a venue or asks, with rft_suggest_deadline and the venue's official dates page read now, not from memory. Write \`gpus:\` on an experiment that takes more than one GPU and \`after:\` on one that waits for another run; rft_set_status records the days a run started and finished. rft_next lists the deadlines first, with what puts them at risk.
-- Before launching an experiment (a training run, a grid, a numerical check, a measurement, a literature search for a yes or no answer), create its node first: rft_add_node with type experiment, parent = the direction it tests, status planned or running, and What / Why filled.
+${featureRules(vault, features)}- Before launching an experiment (a training run, a grid, a numerical check, a measurement, a literature search for a yes or no answer), create its node first: rft_add_node with type experiment, parent = the direction it tests, status planned or running, and What / Why filled.
 - When it finishes or gives a partial result, write the real numbers in its note (Result, with spread over seeds and what failed; Directions found; Code / data: commit, script, results folder, machine), then rft_set_status. Record only results that were actually obtained, never expected or invented ones.
 - Every new idea or question, from a result, a reference, the user or a discussion, even if rejected: rft_add_node with type direction, parent = the note it comes from. Rejected ideas get status discussed; abandoned ones dropped; moved ones moved, with the reason (rft_set_status note).
-- Literature first. When the work turns to a field or question the tree does not cover yet, ASK the user whether to run a thorough literature search before experimenting (the user can also run /rft-literature <topic>), so the work starts from prior results. When you propose a new concept, offer a search for it too; its reference notes go under the concept's start note.
-- A paper, method or literature review that was read: rft_add_node with type reference, parent = the note that led to it (a review may hold one reference per key paper). Fill Source with a link that can be checked (DOI, arXiv id or URL), Summary, Method, Key results as the source reports them (and where), and your reading under Relevance. Only sources actually read: never invent a citation, or a result the source does not report. Status planned = to read, running = reading, done = summarised, dropped = not relevant.
+- Literature first. When the work turns to a field or question the tree does not cover yet, ASK the user whether to run a thorough literature search before experimenting (the user can also run /rft-literature <topic>), so the work starts from prior results. When you propose a new concept, offer a search for it too; it goes under the concept's start note.
+- A paper, method or literature review that was read: rft_add_node with type reference, parent = the note that led to it. A literature search is ONE note tagged literature, its papers listed in it; a single paper gets a note of its own only when the user chooses. Fill Source with a link that can be checked (DOI, arXiv id or URL), Summary, Method, Key results as the source reports them (and where), and your reading under Relevance. Only sources actually read: never invent a citation, or a result the source does not report. Status planned = to read, running = reading, done = summarised, dropped = not relevant.
 - A definition, method, taxonomy, proof or argument of the project's own: rft_add_node with type theory, parent = the note it builds on most, every other note it builds on linked under Builds on. Status idea = draft, running = being worked out, done = settled, dropped = refuted.
 - Experiments and directions name what they build on: refs (rft_add_node's refs, or rft_set_refs) links the reference notes (R..) behind them, above all the paper(s) whose setup an experiment starts from (baseline, data, protocol). A paper that is not in the tree yet becomes a reference note first.
 - Give every new note 1-3 short topical tags (lowercase kebab-case, e.g. \`ablation\`, \`optimisation\`), reusing the ones rft_tags lists before inventing new ones; rft_set_tags changes them. Do not retro-tag old notes unless asked.
@@ -766,8 +790,6 @@ The reasoning of this research project is kept as a tree of Obsidian notes in \`
 - Code: a concept can link the code repositories its work runs on (\`concept_repos:\` on its starting note; on the root note, the whole project's). Its notes work with its own repos first, then those of the concepts above it. When you create a concept, ask the user whether code for it already exists and where; link it with rft_set_repos (never guess a path), then read the code and give the concept's experiments and directions a ## Code section with rft_set_code.
 - The ## Code section of an experiment or direction says how it relates to the code: entry points, files, functions, configs, what has to change (a short pointer for a direction). Write it from the code as it is now (the current commit and uncommitted changes), not as an older note saw it; rft_set_code records the commit it was checked against. Before working on such an experiment (planning, launching, analysing), call rft_code: it lists what changed since that commit; read the changes and update the references with rft_set_code.
 - Results go in the experiment's own note: read the run's outputs where its repo keeps them, process them (seeds aggregated, tables) and write the numbers in Result; record how to reproduce them (the commit of the run, the command and config, where the raw outputs are, how they were processed) with rft_set_code's reproduce.
-- A note with \`locked: true\` in its frontmatter is the user's: never change its text (Edit, Write and shell writes to it are refused, and so are rft_set_status notes and rft_set_code on it). Propose each change with rft_suggest {id, quote, replacement}; the user accepts or rejects it in the tree view. Its status, tags and derived fields still change through the rft tools. Moving it (rft_move_node) or marking it superseded (rft_supersede) writes a line in its History, so the plugin first asks the user whether to unlock it; if they keep it locked the call fails: do not retry it.
-- The user discusses notes in the tree view: comments and suggestions on a part of a note's text (rft_comments lists them). Answer a thread only when the user asks you to: the tree view's Ask Claude sends it to you, and you answer in the thread with rft_comment or rft_suggest, not in the chat.
 - The rft-manual skill is the full manual; rft_map shows the project map, rft_tree the whole tree.
 ${codeContext(tree, where)}
 ${map ? 'The project map at the start of this session (each concept with its state; rft_map <concept> for its notes)' : `The tree at the start of this session${Object.keys(tree.concepts ?? {}).length > 1 ? ', by concept (← parent, when not the line above)' : ''}`}:

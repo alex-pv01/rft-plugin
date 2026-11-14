@@ -12,7 +12,9 @@ interactive tree (pan, zoom, click a node to read it) in a browser.
   source that can be checked, and what they mean for the project. Experiments and directions
   link the references they build on (`refs:`), so every result can be traced to the papers
   behind it. When the work turns to a new field or concept, Claude offers a literature search
-  first (`/rft-literature` asks for one directly).
+  first (`/rft-literature` asks for one directly). A search is written as one **literature
+  note** (an R note tagged `literature`, shown in cyan) that lists every paper found; single
+  papers get notes of their own only when you choose them.
 - **Theory (T..)**: the project's own definitions, methods, taxonomies and arguments, built on
   the directions, experiments and references.
 - **Concepts**: named lines of research. A note can start one, and its subtree belongs to it
@@ -107,9 +109,15 @@ updates notes in `phd/notes/`, and nothing is written beside the code.
   (grouped by concept once there are concepts), so it knows to create an experiment's node
   *before* launching it, record only real results, add a direction for every new idea, and
   propose a concept when a new line of research opens (and ask whether code for it exists). A
-  session started inside a concept's repo is told which concept that code belongs to. The full
-  manual is the `rft-manual` skill.
-- **Tools** Claude calls to keep the tree consistent:
+  session started inside a concept's repo is told which concept that code belongs to. The rules
+  for priorities, dates, locked notes and comments are given in full only in a vault that uses
+  them. The full manual is the `rft-manual` skill.
+- **Tools** Claude calls to keep the tree consistent. Only the ones a session uses most
+  (`rft_add_node`, `rft_set_status`, `rft_set_summary`, `rft_search`, `rft_map`, `rft_graph`,
+  `rft_next`, `rft_move_node`) have their full definition in the prompt from the start. The
+  others are listed by name and loaded when Claude needs one, which keeps every turn cheaper. The
+  date, priority and comment tools join the first group in a vault that uses those features
+  (it has deadlines or dated notes, priorities, comment threads or locked notes).
 
   | tool | does |
   |---|---|
@@ -128,7 +136,7 @@ updates notes in `phd/notes/`, and nothing is written beside the code.
   | `rft_suggest_dates` | suggests an experiment's start and/or estimate, with a one-line reason (`suggested_start:`, `suggested_est:`); you accept or dismiss it. Claude never sets a date itself (see Deadlines and the calendar) |
   | `rft_add_deadline` | adds a deadline you gave Claude in the chat (a milestone, with the notes it needs), once you confirm it in a dialog |
   | `rft_suggest_deadline` | suggests a paper submission deadline, read from the venue's official dates page (`source:`); you accept or dismiss it in the Calendar |
-  | `rft_collect_papers` | downloads, in the background, the open-access PDFs of reference notes (arXiv, OpenReview, PMLR, ACL Anthology, NeurIPS/CVF proceedings, ...) into `vault/papers/<concept>/<year> <first author> <title>.pdf`, linked from each note (`pdf:`); saved PDFs follow their concept. Never from paywalled publishers |
+  | `rft_collect_papers` | downloads, in the background, the open-access PDFs of reference notes (arXiv, OpenReview, PMLR, ACL Anthology, NeurIPS/CVF proceedings, ...) into `vault/papers/<concept>/<year> <first author> <title>.pdf`, linked from each note (`pdf:`; in a literature note, a `PDF:` line under each paper); saved PDFs follow their concept. Never from paywalled publishers |
   | `rft_set_tags` | replaces a note's topical tags (lowercase kebab-case), keeping the project, type and status tags |
   | `rft_set_type` | changes the type of a note made with the wrong one: the next free id of the new type, the file moved to that type's folder, the type's sections (no text lost), every link to it renamed |
   | `rft_tags` | lists the topical tags in use with counts, so Claude reuses them |
@@ -236,11 +244,12 @@ updates notes in `phd/notes/`, and nothing is written beside the code.
   **Resolve** a comment (a ticked circle), **Accept** a suggestion (✓, its new text is written into
   the note) or **Reject** it (✕); hover one for its name. Closed threads stay in
   the note's **History**, and **Reopen** brings one back.
-  - **Ask Claude** (on a thread, or **Post and ask Claude** / **Post and suggest** when posting) sends the thread to the session that
-    ran `/rft`, as a turn of its own. Claude answers only when asked. It answers in the thread: a
-    comment gets a reply and no edit. A suggestion on a note that is not locked is made in the
-    note and closed as *applied*. On a locked note Claude writes the new text as a suggestion
-    for you to accept.
+  - **Ask Claude** (on a thread, or **Post and ask Claude** / **Post and suggest** when posting) sends the thread to a background
+    Claude (a subagent of the session that ran `/rft`), so the main chat does not grow with each
+    answer. Claude answers only when asked, and in the thread: a comment gets a reply, a
+    suggestion gets its new text as a replacement for you to accept or reject. The subagent only
+    reads; the note changes only when you accept. When no subagent can start, the thread goes to
+    the session as a turn of its own.
   - A thread keeps its quote and the text around it, so it is found again after the note is
     edited. When the quoted text itself changed, the thread says what it now reads, and its
     suggestion can no longer be accepted. When the text is gone, the thread says so.
@@ -248,8 +257,9 @@ updates notes in `phd/notes/`, and nothing is written beside the code.
     folder Obsidian leaves alone. They follow a note whose type (and id) changes.
 - **Lock** (the padlock in the drawer) makes a note yours: `locked: true` in its frontmatter.
   Claude then changes nothing in its text, only suggests changes, which you accept. The plugin
-  refuses Claude's Edit and Write on a locked note, shell commands that write to it and name its
-  file (as far as a command shows that), and `rft_set_status` notes and `rft_set_code` on it.
+  refuses Claude's Edit and Write on a locked note, shell commands that write to it (a redirection,
+  `tee`, `sed -i`, `perl -i`, `mv`, `cp`, `rm`, ...; a script run by an interpreter, when it names
+  the note), and `rft_set_status` notes and `rft_set_code` on it.
   Status, tags and the tree's derived fields still change. Your own edits in the drawer are not
   affected, and neither are Obsidian's. Moving a locked note, or marking it superseded, writes a
   line in its **History**, so it unlocks the note, and only once you agree: the session asks you
@@ -319,7 +329,7 @@ that change them are refused.
   editor (due date, needs, **Done**). Any note can also have a `due:` of its own.
 - **An experiment's run**: `start:` (a day) and `est:` (`3d`, `2w`), set in the note's drawer or
   by dragging its bar on the Timeline (the bar moves the start, its right end the estimate).
-  `rft_set_status` records `started:` and `finished:`. `after:` names the runs it waits for, and
+  In a vault that uses dates, `rft_set_status` records `started:` and `finished:`. `after:` names the runs it waits for, and
   `gpus:` how many GPUs it takes (one when not given).
 - **Planning**, backwards from each deadline in whole days: what it needs must end by its due day;
   each note's latest start is the due day less its estimate (and less those that come after it),
@@ -489,10 +499,11 @@ needs no network.
 | `/rft-init [starting question]` | activate RFT here and create (or adopt) the vault |
 | `/rft-concepts` | print the concept tree |
 | `/rft-concepts suggest` | ask Claude to propose a concept split; nothing changes until you confirm |
-| `/rft-literature <topic, id or concept>` | ask Claude for a literature search: one reference note per key paper read, under the note or concept it is about, then a synthesis and the directions it suggests (added only once you choose) |
+| `/rft-literature <topic, id or concept>` | ask Claude for a literature search: one literature note with every key paper read, under the note or concept it is about, then a synthesis, the directions it suggests and the papers worth a note of their own (added only once you choose) |
 | `/rft-rebalance [concept or id] [--full]` | ask Claude to propose moving branches under the line of research they belong to, as a table of moves; only the ones you confirm are made, each keeping its origin. The plugin first finds the candidates (notes whose words and references sit closer to another concept than to their own) and Claude judges only those; `--full` has Claude review the whole tree instead |
 | `/rft-next [concept]` | print what is still open, by concept: running and planned experiments, unexplored directions, open questions (no model turn) |
 | `/rft-summarize [concept]` | ask Claude to write the missing note summaries and concept digests of an existing tree, concept by concept (a one-off job) |
+| `/rft-update [apply] [--sections]` | bring a vault made by an older version up to this one: list what it lacks (the folders and templates of newer note types, the config's format); `apply` writes it and refreshes the derived files. Notes are never changed, except that `--sections` adds the sections their type has gained, as empty headings, to unlocked notes. A session on an older vault starts with a toast pointing here (no model turn) |
 | `/rft-view` | write `vault/tree.html`: the same tree view as one standalone file, every note inside (images as placeholders), to open anywhere or share |
 
 The plugin registers these commands when a session starts, so the desktop app's slash-command
@@ -509,11 +520,12 @@ and it runs. The terminal's typeahead lists them.
 `.rft/config.json`:
 
 ```json
-{ "version": 1, "vault": "vault", "project": "my-project", "canvas": true, "mermaid": false,
+{ "version": 2, "vault": "vault", "project": "my-project", "canvas": true, "mermaid": false,
   "lastId": { "E": 12, "D": 9 }, "webPort": 0, "requireRefs": true, "gpus": 2 }
 ```
 
-`mermaid: true` also writes `Reasoning tree (diagram).md`, a Mermaid flowchart Obsidian draws
+`version` is the vault's format, not the plugin's: it changes only when what a vault holds
+changes, and `/rft-update` brings a vault of an older format up to date. `mermaid: true` also writes `Reasoning tree (diagram).md`, a Mermaid flowchart Obsidian draws
 natively. `lastId` keeps ids from being reused after a note is deleted. `webPort` fixes the
 tree view's port (0: a free one), handy for a standing `ssh -L` forward. `requireRefs: true`
 (set by `/rft-init` on a new vault, off on an adopted one) makes `rft_validate` warn about
@@ -547,6 +559,9 @@ session with the plugin loaded from this folder.
   the standalone page.
 - `hooks/lib/comments.ts`: comments, suggestions and locked notes, as Claude's tools see them.
 - `hooks/lib/priority.ts`: priorities, their limits and Claude's suggested ones.
+- `hooks/lib/tools.ts`: which tools sit in the prompt from the start; `hooks/lib/shell.ts` the
+  files a shell command writes (the guards' input); `hooks/lib/answers.ts` the subagents that
+  answer threads; `hooks/lib/update.ts` `/rft-update` and the vault's format.
 - `web/`: the tree view (`index.html`, `app.js`, `app.css`; `filters.js`, `kanban.js`, `layout.js` and
   `concepts.js` hold the pure filter, kanban, radial layout and concept logic; `markdown.js` the note
   renderer, footnotes and the map from the page back to the note's text; `theme.js` the light and
@@ -555,6 +570,10 @@ session with the plugin loaded from this folder.
 - `server/rft_server.py`: the local server (Python standard library).
 - `skills/rft-manual/SKILL.md`: the manual; `tests/`: the mod's tests on an in-memory vault, the
   outline pane on every surface, and the server's tests.
+- `bench/bench.py`: the token benchmark. It runs tasks headless (`claude -p`) on fresh copies of a
+  project, once per plugin folder, and prints the input tokens, output tokens, cost and turns of
+  each: `python3 bench/bench.py --project <copy> --tasks tasks.json --plugin old=<folder>
+  --plugin new=. --runs 3`. The project is copied, never changed.
 
 ## License
 
